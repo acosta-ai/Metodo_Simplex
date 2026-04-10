@@ -8,6 +8,12 @@ def format_frac(val):
         return str(val.numerator)
     return f"{val.numerator}/{val.denominator}"
 
+def format_short(val):
+    # Función para quitar ceros decimales innecesarios (ej. 2.5000 -> 2.5)
+    if val == int(val):
+        return str(int(val))
+    return f"{val:.3f}".rstrip('0').rstrip('.')
+
 class MNum:
     def __init__(self, m, num):
         self.m = Fraction(m)
@@ -234,17 +240,15 @@ class SimplexSolver:
         
         return status, ans_z, self.tables, ans_vars
 
-# Configuración de la página
+# --- INTERFAZ VISUAL ---
 st.set_page_config(page_title="Simplex Pro", page_icon="📈", layout="wide")
 st.title("📈 Simplex Pro: Analizador de Decisiones con Tablas")
 
-# --- BARRA LATERAL ---
 st.sidebar.header("Configuración")
 tipo_opt = st.sidebar.radio("Objetivo del Problema:", ("Maximizar", "Minimizar"))
 n_vars = st.sidebar.number_input("Variables de Decisión", min_value=1, max_value=10, value=2)
 n_restr = st.sidebar.number_input("Total de Restricciones", min_value=1, max_value=15, value=2)
 
-# --- NOMBRES DE VARIABLES ---
 st.subheader("1. Identificación de Variables")
 st.info("Asigna nombres a tus variables para que la conclusión sea más clara.")
 nombres_vars = []
@@ -254,16 +258,15 @@ for i in range(n_vars):
         nombre = st.text_input(f"Nombre de x{i+1}", value=f"X{i+1}", key=f"name_{i}")
         nombres_vars.append(nombre)
 
-# --- FUNCIÓN OBJETIVO ---
 st.subheader(f"2. Función Objetivo a {tipo_opt}")
 c = []
 cols_z = st.columns(n_vars)
 for i in range(n_vars):
     with cols_z[i]:
-        val = st.number_input(f"Coef. de {nombres_vars[i]}", value=0.0, key=f"c_{i}")
+        # Formato "%g" quita los decimales inútiles de la pantalla (ej. de ,00 a nada)
+        val = st.number_input(f"Coef. de {nombres_vars[i]}", value=0.0, step=1.0, format="%g", key=f"c_{i}")
         c.append(val)
 
-# --- RESTRICCIONES ---
 st.subheader("3. Restricciones del Sistema")
 A = []
 b = []
@@ -275,45 +278,41 @@ for i in range(n_restr):
         fila_actual = []
         for j in range(n_vars):
             with cols_r[j]:
-                fila_actual.append(st.number_input(f"{nombres_vars[j]} (R{i+1})", value=0.0, key=f"r_{i}_{j}"))
+                fila_actual.append(st.number_input(f"{nombres_vars[j]} (R{i+1})", value=0.0, step=1.0, format="%g", key=f"r_{i}_{j}"))
         
         with cols_r[n_vars]:
             signo = st.selectbox("Signo", ("<=", ">=", "="), key=f"signo_{i}")
         with cols_r[n_vars + 1]:
-            rhs = st.number_input("Lado Der. (RHS)", value=0.0, key=f"rhs_{i}")
+            rhs = st.number_input("Lado Der. (RHS)", value=0.0, step=1.0, format="%g", key=f"rhs_{i}")
             
         A.append(fila_actual)
         signs.append(signo)
         b.append(rhs)
 
-# --- PROCESAMIENTO ---
 st.divider()
 if st.button("📊 GENERAR ANÁLISIS FINAL", type="primary", use_container_width=True):
     try:
         solver = SimplexSolver(tipo_opt, c, A, b, signs, nombres_vars)
         status, z_val, tables, ans_vars = solver.solve()
         
-        # Display Tables
         st.subheader("📝 Evolución de las Tablas Simplex")
         for idx, table in enumerate(tables):
             st.markdown(f"**Iteración {idx}**")
             st.dataframe(table, use_container_width=True, hide_index=True)
             
         if status == "Óptimo":
-            # --- RESULTADOS MÉTRICOS ---
             st.success("✅ Análisis Completado Exitosamente")
             val_z_float = float(z_val) if isinstance(z_val, MNum) else float(z_val)
-            st.metric(label=f"Resultado Óptimo de Z ({tipo_opt})", value=f"{val_z_float:,.2f}")
+            st.metric(label=f"Resultado Óptimo de Z ({tipo_opt})", value=format_short(val_z_float))
             
-            # --- TABLA DE RESULTADOS ---
+            # Formateando números a cortos antes de meterlos a la tabla
             df_res = pd.DataFrame({
                 "Variable": nombres_vars,
-                "Valor Óptimo": [ans_vars[v] for v in nombres_vars],
-                "Impacto Unitario (Coef Objectivo)": c
+                "Valor Óptimo": [format_short(ans_vars[v]) for v in nombres_vars],
+                "Impacto Unitario (Coef Objectivo)": [format_short(x) for x in c]
             })
             st.table(df_res)
             
-            # --- CONCLUSIONES AUTOMÁTICAS ---
             st.subheader("📝 Conclusiones del Modelo")
             
             max_var = max(ans_vars, key=ans_vars.get)
@@ -322,9 +321,9 @@ if st.button("📊 GENERAR ANÁLISIS FINAL", type="primary", use_container_width
             
             conclusion_text = f"""
             Basado en el modelo de Programación Lineal ejecutado:
-            * Para lograr un **{tipo_opt.lower()}** de **{val_z_float:,.2f}** en la función objetivo, se deben asignar los valores mostrados en la tabla.
-            * La variable con mayor presencia en la solución es **{max_var}** con un valor de **{max_val:,.2f}**.
-            * {'Variables como ' + ', '.join(ceros) + ' no deberían ser priorizadas (valor 0)' if len(ceros) > 0 else 'Todas las variables contribuyen activamente a la solución.'}
+            * Para lograr un **{tipo_opt.lower()}** de **{format_short(val_z_float)}** en la función objetivo, se deben asignar los valores que se muestran en la tabla.
+            * La variable con mayor presencia en la solución es **{max_var}** con un valor de **{format_short(max_val)}**.
+            * {'Variables como ' + ', '.join(ceros) + ' no deberían ser priorizadas (valor 0)' if len(ceros) > 0 else 'Todas las variables indicadas aportan a la solución y ninguna vale 0.'}
             """
             st.info(conclusion_text)
             
