@@ -1,100 +1,182 @@
-import streamlit as st
 import numpy as np
 import pandas as pd
-from scipy.optimize import linprog
+import fractions
 
-# Configuración de la página
-st.set_page_config(page_title="Simplex Pro", page_icon="📈", layout="wide")
-st.title("📈 Simplex Pro: Analizador de Decisiones")
+def to_fraction_str(val):
+    if pd.isna(val):
+        return ""
+    frac = fractions.Fraction(val).limit_denominator(1000)
+    if frac.denominator == 1:
+        return str(frac.numerator)
+    return f"{frac.numerator}/{frac.denominator}"
 
-# --- BARRA LATERAL ---
-st.sidebar.header("Configuración")
-tipo_opt = st.sidebar.radio("Objetivo del Problema:", ("Maximizar", "Minimizar"))
-n_vars = st.sidebar.number_input("Variables de Decisión", min_value=2, max_value=10, value=2)
-n_restr = st.sidebar.number_input("Total de Restricciones", min_value=1, max_value=15, value=2)
-
-# --- NOMBRES DE VARIABLES ---
-st.subheader("1. Identificación de Variables")
-st.info("Asigna nombres a tus variables para que la conclusión sea más clara.")
-nombres_vars = []
-cols_nombres = st.columns(n_vars)
-for i in range(n_vars):
-    with cols_nombres[i]:
-        nombre = st.text_input(f"Nombre de x{i+1}", value=f"Variable {i+1}", key=f"name_{i}")
-        nombres_vars.append(nombre)
-
-# --- FUNCIÓN OBJETIVO ---
-st.subheader(f"2. Función Objetivo a {tipo_opt}")
-c = []
-cols_z = st.columns(n_vars)
-for i in range(n_vars):
-    with cols_z[i]:
-        val = st.number_input(f"Coef. de {nombres_vars[i]}", value=0.0, key=f"c_{i}")
-        c.append(-val if tipo_opt == "Maximizar" else val)
-
-# --- RESTRICCIONES ---
-st.subheader("3. Restricciones del Sistema")
-A_ub, b_ub, A_eq, b_eq = [], [], [], []
-
-for i in range(n_restr):
-    with st.expander(f"Configurar Restricción {i+1}", expanded=True):
-        cols_r = st.columns(n_vars + 2)
-        fila_actual = []
-        for j in range(n_vars):
-            with cols_r[j]:
-                fila_actual.append(st.number_input(f"{nombres_vars[j]} (R{i+1})", value=0.0, key=f"r_{i}_{j}"))
+class SimplexModel:
+    def __init__(self, obj_type, c, A, signs, b, var_names):
+        self.obj_type = obj_type # 'max' or 'min'
+        self.c = list(c)
+        self.A = [list(row) for row in A]
+        self.signs = list(signs)
+        self.b = list(b)
+        self.var_names = list(var_names)
+        self.big_m = 1000000.0 # representing Big M
+        self.tables = []
         
-        with cols_r[n_vars]:
-            signo = st.selectbox("Signo", ("<=", ">=", "="), key=f"signo_{i}")
-        with cols_r[n_vars + 1]:
-            rhs = st.number_input("Lado Der. (RHS)", value=0.0, key=f"rhs_{i}")
+    def solve(self):
+        # 1. Setup initial tableau
+        # Variables: X..., S..., E..., A..., RHS
+        n_vars = len(self.c)
+        m_constraints = len(self.A)
         
-        if signo == "<=":
-            A_ub.append(fila_actual); b_ub.append(rhs)
-        elif signo == ">=":
-            A_ub.append([-x for x in fila_actual]); b_ub.append(-rhs)
-        else:
-            A_eq.append(fila_actual); b_eq.append(rhs)
+        # Ensure RHS >= 0
+        for i in range(m_constraints):
+            if self.b[i] < 0:
+                self.b[i] = -self.b[i]
+                self.A[i] = [-v for v in self.A[i]]
+                if self.signs[i] == '<=':
+                    self.signs[i] = '>='
+                elif self.signs[i] == '>=':
+                    self.signs[i] = '<='
+        
+        slacks = []
+        surplus = []
+        artificials = []
+        
+        col_names = list(self.var_names)
+        
+        # Add variables based on signs
+        for i, sign in enumerate(self.signs):
+            if sign == '<=':
+                col_names.append(f"S{i+1}")
+                slacks.append(i)
+            elif sign == '>=':
+                col_names.append(f"E{i+1}")
+                col_names.append(f"A{i+1}")
+                surplus.append(i)
+                artificials.append(i)
+            elif sign == '=':
+                col_names.append(f"A{i+1}")
+                artificials.append(i)
+        
+        col_names.append("RHS")
+        n_cols = len(col_names)
+        
+        tableau = np.zeros((m_constraints + 1, n_cols), dtype=float)
+        
+        # Fill A part
+        for i in range(m_constraints):
+            tableau[i, :n_vars] = self.A[i]
+            tableau[i, -1] = self.b[i]
+            
+        basis_vars = []
+        
+        # Position mapping
+        current_col = n_vars
+        for i, sign in enumerate(self.signs):
+            if sign == '<=':
+                tableau[i, current_col] = 1.0
+                basis_vars.append(col_names[current_col])
+                current_col += 1
+            elif sign == '>=':
+                tableau[i, current_col] = -1.0 # E
+                current_col += 1
+                tableau[i, current_col] = 1.0 # A
+                basis_vars.append(col_names[current_col])
+                current_col += 1
+            elif sign == '=':
+                tableau[i, current_col] = 1.0 # A
+                basis_vars.append(col_names[current_col])
+                current_col += 1
 
-# --- PROCESAMIENTO ---
-st.divider()
-if st.button("📊 GENERAR ANÁLISIS FINAL", type="primary", use_container_width=True):
-    try:
-        res = linprog(
-            c, 
-            A_ub=A_ub if A_ub else None, b_ub=b_ub if b_ub else None,
-            A_eq=A_eq if A_eq else None, b_eq=b_eq if b_eq else None,
-            bounds=(0, None), method='highs'
-        )
+        # Z row definition initially
+        # Z - C = 0
+        
+        if self.obj_type == 'Maximizar':
+            # Maximize: Z row = -C
+            tableau[-1, :n_vars] = [-v for v in self.c]
+            # Artificials cost -M in obj, so in Z-row it's +M
+            for i, sign in enumerate(self.signs):
+                if sign in ['>=', '=']:
+                    # Find A column
+                    idx = basis_vars[i]
+                    col_idx = col_names.index(idx)
+                    tableau[-1, col_idx] = self.big_m
+        else: # Minimizar
+            # Minimize: Z row = C
+            tableau[-1, :n_vars] = [v for v in self.c]
+            # Artificials cost M in obj, so in Z-row it's -M
+            for i, sign in enumerate(self.signs):
+                if sign in ['>=', '=']:
+                    idx = basis_vars[i]
+                    col_idx = col_names.index(idx)
+                    tableau[-1, col_idx] = -self.big_m
 
-        if res.success:
-            val_z = -res.fun if tipo_opt == "Maximizar" else res.fun
-            
-            # --- RESULTADOS MÉTRICOS ---
-            st.success("✅ Análisis Completado Exitosamente")
-            st.metric(label=f"Resultado Óptimo de Z ({tipo_opt})", value=f"{val_z:,.2f}")
-            
-            # --- TABLA DE RESULTADOS ---
-            df_res = pd.DataFrame({
-                "Variable": nombres_vars,
-                "Valor Óptimo": res.x,
-                "Impacto Unitario": [abs(x) for x in c]
-            })
-            st.table(df_res)
+        # Normalize Z-row to clear Big M columns
+        for i, b_var in enumerate(basis_vars):
+            if b_var.startswith('A'):
+                col_idx = col_names.index(b_var)
+                m_coef = tableau[-1, col_idx]
+                # subtract m_coef * row from Z-row
+                tableau[-1, :] -= m_coef * tableau[i, :]
+                
+        def save_table():
+            df = pd.DataFrame(tableau, columns=col_names, index=basis_vars + ['Z'])
+            self.tables.append(df.copy())
 
-            # --- CONCLUSIONES AUTOMÁTICAS ---
-            st.subheader("📝 Conclusiones del Modelo")
+        save_table()
+        
+        iteration = 0
+        while iteration < 100: # prevent infinite loops
+            # Find entering variable
+            if self.obj_type == 'Maximizar':
+                # Most negative in Z row (excluding RHS)
+                z_row = tableau[-1, :-1]
+                if np.all(z_row >= -1e-7):
+                    break # Optimal
+                enter_idx = np.argmin(z_row)
+            else:
+                # Most positive in Z row (excluding RHS)
+                z_row = tableau[-1, :-1]
+                if np.all(z_row <= 1e-7):
+                    break # Optimal
+                enter_idx = np.argmax(z_row)
+                
+            # Find leaving variable using ratio test
+            enter_col = tableau[:-1, enter_idx]
+            rhs_col = tableau[:-1, -1]
             
-            conclusion_text = f"""
-            Basado en el modelo de Programación Lineal ejecutado:
-            * Para lograr un **{tipo_opt.lower()}** de **{val_z:,.2f}** en la función objetivo, se deben asignar los valores mostrados en la tabla.
-            * La variable con mayor presencia en la solución es **{nombres_vars[np.argmax(res.x)]}** con un valor de **{max(res.x):,.2f}**.
-            * {'Variables como ' + ', '.join([nombres_vars[i] for i, v in enumerate(res.x) if v == 0]) + ' no deberían ser priorizadas (valor 0)' if 0 in res.x else 'Todas las variables contribuyen activamente a la solución.'}
-            """
-            st.info(conclusion_text)
+            ratios = []
+            for i in range(m_constraints):
+                if enter_col[i] > 1e-7:
+                    ratios.append(rhs_col[i] / enter_col[i])
+                else:
+                    ratios.append(float('inf'))
             
-            st.balloons()
-        else:
-            st.error(f"Infactible: {res.message}")
-    except Exception as e:
-        st.error(f"Error en los datos: {e}")
+            if all(r == float('inf') for r in ratios):
+                return "Infactible/Unbounded" # Unbounded
+                
+            leave_idx = np.argmin(ratios)
+            
+            # Pivot
+            pivot = tableau[leave_idx, enter_idx]
+            tableau[leave_idx, :] /= pivot
+            
+            for i in range(m_constraints + 1):
+                if i != leave_idx:
+                    factor = tableau[i, enter_idx]
+                    tableau[i, :] -= factor * tableau[leave_idx, :]
+                    
+            basis_vars[leave_idx] = col_names[enter_idx]
+            save_table()
+            iteration += 1
+
+        return "Optimal"
+
+if __name__ == "__main__":
+    A = [[2/3, 1], [8/3, 0]]
+    c = [5/2, 40]
+    signs = ['<=', '<=']
+    b = [40, 20]
+    model = SimplexModel('Maximizar', c, A, signs, b, ['X1', 'X2'])
+    model.solve()
+    for t in model.tables:
+        print(t)
