@@ -3,72 +3,69 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import linprog
 
-st.set_page_config(page_title="Simplex Iterativo", page_icon="📊", layout="wide")
-st.title("📊 Simplex Pro: Análisis por Etapas")
+st.set_page_config(page_title="Simplex Pro", page_icon="📊", layout="wide")
+st.title("📊 Simplex Pro: Analizador Dinámico")
 
 # --- CONFIGURACIÓN ---
 st.sidebar.header("Configuración")
-tipo_opt = st.sidebar.radio("Objetivo:", ("Maximizar", "Minimizar"))
-n_vars = st.sidebar.number_input("Variables", min_value=2, value=2)
-n_restr = st.sidebar.number_input("Restricciones", min_value=1, value=2)
+tipo_opt = st.sidebar.radio("Objetivo del Problema:", ("Maximizar", "Minimizar"))
+n_vars = st.sidebar.number_input("Número de Variables", min_value=1, value=2)
+n_restr = st.sidebar.number_input("Número de Restricciones", min_value=1, value=2)
 
 # --- ENTRADA DE DATOS ---
+st.subheader("1. Coeficientes de la Función Objetivo (Z)")
 c = []
 cols_z = st.columns(n_vars)
 for i in range(n_vars):
-    c.append(cols_z[i].number_input(f"Coeficiente x{i+1} en Z", value=0.0))
+    val = cols_z[i].number_input(f"Coeficiente x{i+1}", value=0.0, key=f"obj_{i}")
+    c.append(-float(val) if tipo_opt == "Maximizar" else float(val))
 
-A = []
-b = []
+st.subheader("2. Restricciones")
+A_ub, b_ub = [], []
 for i in range(n_restr):
     with st.expander(f"Restricción {i+1}", expanded=True):
         cols_r = st.columns(n_vars + 1)
         fila = []
         for j in range(n_vars):
-            fila.append(cols_r[j].number_input(f"x{j+1} R{i+1}", value=0.0, key=f"r{i}{j}"))
-        b.append(cols_r[-1].number_input(f"RHS R{i+1}", value=0.0, key=f"b{i}"))
-        A.append(fila)
+            val_r = cols_r[j].number_input(f"x{j+1} (R{i+1})", value=0.0, key=f"restr_{i}_{j}")
+            fila.append(float(val_r))
+        rhs = cols_r[-1].number_input(f"Lado Derecho (RHS) {i+1}", value=0.0, key=f"rhs_{i}")
+        A_ub.append(fila)
+        b_ub.append(float(rhs))
 
-if st.button("📊 RESOLVER PASO A PASO", type="primary"):
-    # Ajuste para maximización
-    c_proc = [-x for x in c] if tipo_opt == "Maximizar" else c
-    
-    # Usamos el método 'revised simplex' que permite seguir iteraciones
-    res = linprog(c_proc, A_ub=A, b_ub=b, method='revised simplex', options={"disp": False})
-    
-    if res.success:
-        st.balloons()
-        st.success(f"### 🎯 Resultado Final: Z = {abs(res.fun):.2f}")
+# --- BOTÓN DE RESOLVER ---
+st.divider()
+if st.button("🚀 CALCULAR SOLUCIÓN ÓPTIMA", type="primary", use_container_width=True):
+    try:
+        # Usamos el método 'highs' que es el más preciso actualmente
+        res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=(0, None), method='highs')
         
-        # Mostrar valores de las variables
-        cols_res = st.columns(len(res.x))
-        for i, val in enumerate(res.x):
-            cols_res[i].metric(f"Valor de x{i+1}", f"{val:.2f}")
-
-        st.divider()
-        st.subheader("📝 Comparación con tu pizarra")
-        
-        # Explicación de las tablas
-        st.write(f"Para llegar de la **Tabla 1** (Z={abs(np.dot(c, [0, 40]) if len(res.x)>1 else 0)}) a la **Tabla 2** (Z={abs(res.fun)}), el sistema realizó un cambio de base.")
-        
-        # Creación de la tabla final formateada como la de tu imagen
-        filas_tabla = []
-        # Reconstrucción de la tabla final (Simplificado para visualización)
-        # Nota: Linprog no da las tablas intermedias fácilmente, pero podemos mostrar la estructura final
-        st.info("Estructura de la Solución Óptima (Tabla Final):")
-        
-        data_final = {
-            "Variable": [f"x{i+1}" for i in range(len(res.x))],
-            "Valor Final": res.x,
-            "Estado": ["En la base" if x > 0 else "Fuera de la base" for x in res.x]
-        }
-        st.table(pd.DataFrame(data_final))
-        
-        st.markdown(f"""
-        **Análisis de tu imagen:**
-        * Tu **Tabla 1** muestra $x_2=40$ y $x_1$ fuera de la base.
-        * Tu **Tabla 2** (la de abajo) es la correcta final: **$x_1=7.5$** y **$x_2=35$**.
-        * El valor de $Z = 1587.5$ es el máximo global.
-        """)
-    else:
-        st.error("No se pudo encontrar una solución. Revisa los signos.")
+        if res.success:
+            st.balloons()
+            val_z = -res.fun if tipo_opt == "Maximizar" else res.fun
+            
+            # --- RESULTADOS PRINCIPALES ---
+            st.success(f"### 🎉 ¡Solución Final Encontrada!")
+            st.metric(label=f"Valor Óptimo de Z ({tipo_opt})", value=f"{val_z:,.2f}")
+            
+            # --- TABLA DE VARIABLES ---
+            st.write("### 📝 Valores finales en la pizarra (V.I.):")
+            df_res = pd.DataFrame({
+                "Variable": [f"x{i+1}" for i in range(n_vars)],
+                "Valor Óptimo": [round(x, 4) for x in res.x],
+                "Estado": ["En la Base" if x > 0.0001 else "Fuera de la Base" for x in res.x]
+            })
+            st.table(df_res)
+            
+            # --- COMPARATIVA DE PIZARRA ---
+            st.info(f"""
+            **Interpretación:**
+            * Para obtener el máximo de **{val_z:,.2f}**, el sistema determinó que:
+            * **x1** debe valer **{res.x[0]:,.2f}**
+            * **x2** debe valer **{res.x[1]:,.2f}**
+            *(Si estos números coinciden con tu segunda tabla, ¡el ejercicio está perfecto!)*
+            """)
+        else:
+            st.error(f"❌ No se pudo optimizar: {res.message}")
+    except Exception as e:
+        st.error(f"⚠️ Error: Asegúrate de llenar todos los espacios. {e}")
