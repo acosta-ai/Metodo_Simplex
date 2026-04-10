@@ -15,7 +15,6 @@ n_restr = st.sidebar.number_input("Total de Restricciones", min_value=1, max_val
 
 # --- NOMBRES DE VARIABLES ---
 st.subheader("1. Identificación de Variables")
-st.info("Asigna nombres a tus variables para que la conclusión sea más clara.")
 nombres_vars = []
 cols_nombres = st.columns(n_vars)
 for i in range(n_vars):
@@ -29,8 +28,9 @@ c = []
 cols_z = st.columns(n_vars)
 for i in range(n_vars):
     with cols_z[i]:
-        val = st.number_input(f"Coef. de {nombres_vars[i]}", value=0.0, key=f"c_{i}")
-        c.append(-val if tipo_opt == "Maximizar" else val)
+        val = st.number_input(f"Coef. de {nombres_vars[i]}", value=0.0, format="%.2f", key=f"c_{i}")
+        # Linprog minimiza por defecto, multiplicamos por -1 para maximizar
+        c.append(-float(val) if tipo_opt == "Maximizar" else float(val))
 
 # --- RESTRICCIONES ---
 st.subheader("3. Restricciones del Sistema")
@@ -42,59 +42,69 @@ for i in range(n_restr):
         fila_actual = []
         for j in range(n_vars):
             with cols_r[j]:
-                fila_actual.append(st.number_input(f"{nombres_vars[j]} (R{i+1})", value=0.0, key=f"r_{i}_{j}"))
+                val_r = st.number_input(f"{nombres_vars[j]} (R{i+1})", value=0.0, format="%.2f", key=f"r_{i}_{j}")
+                fila_actual.append(float(val_r))
         
         with cols_r[n_vars]:
             signo = st.selectbox("Signo", ("<=", ">=", "="), key=f"signo_{i}")
         with cols_r[n_vars + 1]:
-            rhs = st.number_input("Lado Der. (RHS)", value=0.0, key=f"rhs_{i}")
+            rhs = st.number_input("Lado Der. (RHS)", value=0.0, format="%.2f", key=f"rhs_{i}")
         
         if signo == "<=":
-            A_ub.append(fila_actual); b_ub.append(rhs)
+            A_ub.append(fila_actual)
+            b_ub.append(float(rhs))
         elif signo == ">=":
-            A_ub.append([-x for x in fila_actual]); b_ub.append(-rhs)
+            A_ub.append([-x for x in fila_actual])
+            b_ub.append(-float(rhs))
         else:
-            A_eq.append(fila_actual); b_eq.append(rhs)
+            A_eq.append(fila_actual)
+            b_eq.append(float(rhs))
 
 # --- PROCESAMIENTO ---
 st.divider()
 if st.button("📊 GENERAR ANÁLISIS FINAL", type="primary", use_container_width=True):
     try:
+        # Ejecución del motor matemático
         res = linprog(
             c, 
-            A_ub=A_ub if A_ub else None, b_ub=b_ub if b_ub else None,
-            A_eq=A_eq if A_eq else None, b_eq=b_eq if b_eq else None,
-            bounds=(0, None), method='highs'
+            A_ub=A_ub if A_ub else None, 
+            b_ub=b_ub if b_ub else None,
+            A_eq=A_eq if A_eq else None, 
+            b_eq=b_eq if b_eq else None,
+            bounds=(0, None), 
+            method='highs'
         )
 
         if res.success:
             val_z = -res.fun if tipo_opt == "Maximizar" else res.fun
             
-            # --- RESULTADOS MÉTRICOS ---
             st.success("✅ Análisis Completado Exitosamente")
             st.metric(label=f"Resultado Óptimo de Z ({tipo_opt})", value=f"{val_z:,.2f}")
             
             # --- TABLA DE RESULTADOS ---
             df_res = pd.DataFrame({
                 "Variable": nombres_vars,
-                "Valor Óptimo": res.x,
-                "Impacto Unitario": [abs(x) for x in c]
+                "Valor Óptimo": [round(x, 4) for x in res.x],
+                "Contribución (Coef)": [abs(x) for x in c]
             })
-            st.table(df_res)
+            st.write("### Cantidades a producir/asignar:")
+            st.dataframe(df_res, use_container_width=True)
 
             # --- CONCLUSIONES AUTOMÁTICAS ---
-            st.subheader("📝 Conclusiones del Modelo")
+            st.subheader("📝 Conclusión para tu Informe")
             
-            conclusion_text = f"""
-            Basado en el modelo de Programación Lineal ejecutado:
-            * Para lograr un **{tipo_opt.lower()}** de **{val_z:,.2f}** en la función objetivo, se deben asignar los valores mostrados en la tabla.
-            * La variable con mayor presencia en la solución es **{nombres_vars[np.argmax(res.x)]}** con un valor de **{max(res.x):,.2f}**.
-            * {'Variables como ' + ', '.join([nombres_vars[i] for i, v in enumerate(res.x) if v == 0]) + ' no deberían ser priorizadas (valor 0)' if 0 in res.x else 'Todas las variables contribuyen activamente a la solución.'}
-            """
-            st.info(conclusion_text)
-            
+            idx_max = np.argmax(res.x)
+            v_nulas = [nombres_vars[i] for i, v in enumerate(res.x) if v < 0.0001]
+            concl_nulas = f"Nota: Las variables **{', '.join(v_nulas)}** no deben producirse según este modelo." if v_nulas else "Todas las variables analizadas deben formar parte de la operación."
+
+            st.info(f"""
+            Para alcanzar el beneficio máximo de **{val_z:,.2f}**:
+            1. Se debe priorizar la variable **{nombres_vars[idx_max]}** con un valor de **{res.x[idx_max]:,.2f}**.
+            2. {concl_nulas}
+            """)
             st.balloons()
         else:
-            st.error(f"Infactible: {res.message}")
+            st.error(f"No se encontró una solución óptima: {res.message}")
+            
     except Exception as e:
-        st.error(f"Error en los datos: {e}")
+        st.error(f"Error al calcular: Revisa que todas las casillas tengan números. Detalle: {e}")
